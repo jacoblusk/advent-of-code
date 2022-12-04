@@ -9,9 +9,6 @@ GetLastError   PROTO
 StrToIntA      PROTO
 lstrlenA       PROTO
 
-QueryPerformanceCounter PROTO
-QueryPerformanceFrequency PROTO
-
 EXIT_SUCCESS      equ 0
 EXIT_FAILURE      equ 1
 OF_READ           equ 0
@@ -59,15 +56,8 @@ main PROC
     LOCAL hFileHandle: QWORD
     LOCAL cbFileLength: QWORD
     LOCAL pszFileContent: QWORD
-    LOCAL qwBeforeTime: QWORD
-    LOCAL qwAfterTime: QWORD
-    LOCAL qwFrequency: QWORD
 
-    lea rcx, qwBeforeTime
-    shadowcall QueryPerformanceCounter
-
-    lea rcx, qwFrequency
-    shadowcall QueryPerformanceFrequency
+    sub rsp, 8 ; align stack
 
     xor rax, rax
     mov hProcessHeap, rax
@@ -136,13 +126,7 @@ main PROC
     mov rcx, hFileHandle
     shadowcall CloseHandle
 
-    lea rcx, qwAfterTime
-    shadowcall QueryPerformanceCounter
-
-    mov rcx, qwAfterTime
-    sub rcx, qwBeforeTime
-
-    mov rax, rcx
+    mov rcx, rbx
     jmp exit
 
 get_last_error:
