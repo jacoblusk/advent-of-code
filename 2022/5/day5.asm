@@ -10,6 +10,10 @@ GetLastError   PROTO
 StrToIntA      PROTO
 lstrlenA       PROTO
 
+WriteConsoleA PROTO
+AttachConsole PROTO
+GetStdHandle PROTO
+
 EXIT_SUCCESS      equ 0
 EXIT_FAILURE      equ 1
 OF_READ           equ 0
@@ -133,9 +137,10 @@ allocate_more_space_fail:
     ret
 
 allocate_more_space:
-    mov r8, (STACK PTR[rcx]).pElements
+    mov r8, (STACK PTR [rcx]).pElements
     mov r9, (STACK PTR [rcx]).nCapacity
     add r9, STACK_REALLOC_SIZE
+    imul r9, 8
     mov rcx, hProcessHeap
     xor rdx, rdx
 
@@ -144,15 +149,15 @@ allocate_more_space:
     je allocate_more_space_fail
 
     mov rbx, pStack
-    mov (STACK PTR[rbx]).pElements, rax
+    mov (STACK PTR [rbx]).pElements, rax
     add (STACK PTR [rbx]).nCapacity, STACK_REALLOC_SIZE
     jmp allocate_space_set_data
 Stack_Push ENDP
 
 ; pStack, out pqwData -> bEmpty
 Stack_Pop PROC
-    mov rbx, (STACK PTR[rcx]).pElements
-    mov r8, (STACK PTR[rcx]).nPosition
+    mov rbx, (STACK PTR [rcx]).pElements
+    mov r8, (STACK PTR [rcx]).nPosition
     cmp r8, 0
     je stack_empty
 
@@ -167,6 +172,28 @@ stack_empty:
     mov rax, 1
     ret
 Stack_Pop ENDP
+
+; STACK *pStack
+Stack_Reverse PROC
+    mov rdx, (STACK PTR [rcx]).pElements
+    mov r8, (STACK PTR [rcx]).nPosition
+    cmp r8, 2
+    jle single_element_stack
+
+    xor r9, r9 ; i
+reverse_stack:
+    mov rax, QWORD PTR [rdx + r9 * 8]
+
+    dec r8
+    mov rbx, QWORD PTR [rdx + r8 * 8]
+    mov QWORD PTR [rdx + r9 * 8], rbx
+    mov QWORD PTR [rdx + r8 * 8], rax
+    inc r9
+    cmp r9, r8
+    jl reverse_stack
+single_element_stack:
+    ret
+Stack_Reverse ENDP
 
 main PROC
     LOCAL reOpenBuff: _OFSTRUCT
@@ -264,14 +291,19 @@ main ENDP
 FindTopCrates PROC
     LOCAL pszFileContent: QWORD
     LOCAL qwFileLength: QWORD
-    LOCAL aStacks[NUMBER_OF_COLUMNS]: QWORD
+    LOCAL apStacks[NUMBER_OF_COLUMNS]: QWORD
     LOCAL qwData: QWORD
+    LOCAL qwFromStack: QWORD
+    LOCAL qwToStack: QWORD
+    LOCAL qwAmount: QWORD
+    LOCAL qwCratesMoved: QWORD
 
     push r12 ; preserve nonvolatile registers
     push r13
     push r14
     push r15
 
+    mov qwCratesMoved, 0
     mov pszFileContent, rcx
     mov qwFileLength, rdx
 
@@ -282,7 +314,7 @@ create_column_stacks:
     mov rcx, STACK_REALLOC_SIZE
     shadowcall Stack_Create
 
-    lea rbx, aStacks          ; rbx = &aStacks[0]
+    lea rbx, apStacks          ; rbx = &aStacks[0]
     mov [rbx + r12 * 8], rax  ; aStacks[r11] = rax
 
     inc r12
@@ -293,7 +325,7 @@ create_column_stacks:
 create_column_stacks_finish:
     xor r12, r12 ; nCurrentColumn
     xor r13, r13 ; nCurrentRow
-    lea r15, aStacks
+    lea r15, apStacks
     mov r14, pszFileContent
 
 parse_crate_row:
@@ -320,6 +352,117 @@ parse_crate_row_finished:
     jmp parse_crate_row
 
 parse_crate_diagram_finished:
+
+    xor r12, r12
+    lea r15, apStacks
+reverse_all_stacks:
+    mov rcx, QWORD PTR [r15 + r12 * 8]
+    shadowcall Stack_Reverse
+    inc r12
+    cmp r12, NUMBER_OF_COLUMNS
+    jne reverse_all_stacks
+
+    mov rcx, pszFileContent
+    add rcx, 36 * NUMBER_OF_COLUMNS ; move past diagram
+    xor rax, rax
+    xor r8, r8
+find_start_of_moves:
+    inc rcx
+    mov al, BYTE PTR [rcx]
+    cmp al, 'm' ; first letter m in move
+    jne find_start_of_moves
+
+    xor r12, r12 ; iRowIndex
+    mov r13, rcx ; pszFileContents_modified
+    xor r14, r14 ; nLastStringLength
+    lea r15, apStacks
+    xor rax, rax
+parse_moves_row:
+replace_move_row_nulls:
+    xor rax, rax
+    mov al, BYTE PTR [r13 + r12]
+    cmp al, ' '
+    je replace_with_null
+    cmp al, LINE_FEED
+    je replace_move_row_nulls_finished
+    inc r12
+    jmp replace_move_row_nulls
+replace_with_null:
+    mov BYTE PTR [r13 + r12], NULL
+    jmp replace_move_row_nulls
+replace_move_row_nulls_finished:
+    add r13, 5
+    mov rcx, r13
+
+    shadowcall lstrlenA
+    mov r14, rax
+
+    mov rcx, r13
+    shadowcall StrToIntA
+    mov qwAmount, rax
+
+    xor rbx, rbx
+    xor rdx, rdx
+    mov bl, BYTE PTR [r13 + r14 + 6]
+    sub rbx, 49
+    mov qwFromStack, rbx
+    mov dl, BYTE PTR [r13 + r14 + 11]
+    sub rdx, 49
+    mov qwToStack, rdx
+
+move_crates:
+    mov rbx, qwFromStack
+    mov rcx, QWORD PTR [r15 + rbx * 8] ; pStack
+
+    lea rdx, qwData
+    shadowcall Stack_Pop
+    
+
+    mov rbx, qwToStack
+    mov rcx, QWORD PTR [r15 + rbx * 8] ; pStack
+    mov rdx, qwData
+    shadowcall Stack_Push
+
+    inc qwCratesMoved
+    mov rax, qwCratesMoved
+    cmp rax, qwAmount
+    jne move_crates
+
+    mov qwCratesMoved, 0
+    lea r13, [r13 + r14 + 13]
+    xor r12, r12
+
+    mov rax, r13
+    mov rbx, pszFileContent
+    sub rax, rbx
+    cmp rax, qwFileLength
+    jl parse_moves_row
+
+    mov rcx, -1
+    shadowcall AttachConsole
+
+    mov rcx, STD_OUTPUT_HANDLE
+    shadowcall GetStdHandle
+    mov r13, rax
+
+    xor r12, r12
+print_top_of_stacks:
+    mov rcx, QWORD PTR [r15 + r12 * 8]
+    lea rdx, qwData
+    shadowcall Stack_Pop
+
+    mov rcx, r13
+    lea rdx, qwData
+    mov r8, 1
+    mov r9, 0
+    push 0
+    push 0
+    shadowcall WriteConsoleA
+
+    inc r12
+    cmp r12, NUMBER_OF_COLUMNS 
+    jne print_top_of_stacks
+    
     pop r15
     pop r14
     pop r13
